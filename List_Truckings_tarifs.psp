@@ -1,0 +1,467 @@
+#!/usr/bin/perl
+use strict;
+
+use CGI;
+use DBI;
+use HTML::Template;
+
+use MIME::Lite;
+use MIME::QuotedPrint;
+use MIME::Base64;
+
+use lib "/home/fcs/cot_fret/yrocher/web/params/";    # permet d'ajouter des repertoires à @INC
+use lib "/home/fcs/cot_fret/yrocher/web/lib/";       # permet d'ajouter des repertoires à @INC
+use cot_yr_conf;
+use cot_yr_procetfonc;
+
+my $r = shift;
+$r->content_type('text/html;');
+$r->no_cache(1);
+
+my $dbug = 0;
+
+my $hdl_cgi    = new CGI;
+
+my $id_trucking_cost = $hdl_cgi->param('id_trucking_cost');
+my $which_event = $hdl_cgi->param('which_event');
+my $id_date = $hdl_cgi->param('id_date');
+my $id_cost_by_volume   = $hdl_cgi->param('id_cost_by_volume');
+my $id_cost_by_volume_to_delete   = $hdl_cgi->param('id_cost_by_volume_to_delete');
+
+my $input_effective_date= date_fr_to_en($hdl_cgi->param('input_date'));
+my $input_fcl_cost_per_ct= $hdl_cgi->param('input_fcl_cost_per_ct');
+#my $input_lcl_cost_per_cbm= $hdl_cgi->param('input_lcl_cost_per_cbm');
+my $input_fcl_cost_per_ct_refer= $hdl_cgi->param('input_fcl_cost_per_ct_refer');
+#my $input_lcl_cost_per_cbm_refer= $hdl_cgi->param('input_lcl_cost_per_cbm_refer');
+my $nb_bracket        = $hdl_cgi->param('nb_bracket');
+my $id_trucking  = $hdl_cgi->param('id_trucking');
+
+my $sender='no-reply@fcsystem.com';
+my $to='system@e-solutions.tm.fr';
+my $subject;
+my $body;
+
+my @list_vmin;
+my @list_vmax;
+my @list_cost;
+my @list_id;
+
+my $vmin;
+my $vmax;
+my $cost;
+my $id_bracket;
+my $usd_to_euro_rate; 	
+my $i= 0;
+my $id_by_date;
+ 
+while ($i < $nb_bracket) {
+ 
+  $vmin= $hdl_cgi->param('vmin_'.$i);
+  $vmax= $hdl_cgi->param('vmax_'.$i);
+  $cost= $hdl_cgi->param('cost_'.$i);
+  $id_bracket = $hdl_cgi->param('id_bracket_'.$i);
+  
+  push ( @list_vmin, $vmin);
+  push ( @list_vmax, $vmax);
+  push ( @list_cost, $cost);
+  push ( @list_id, $id_bracket);
+  $i++;
+}
+
+( my $dbh = DBI->connect( $base_fcs_dsn, $base_fcs_user, $base_fcs_password, { AutoCommit => 1 } ) ) or die print "Connexion base impossible." ;
+
+my $max_id='100000';
+my $sqlr_max = "
+SELECT 
+
+max(id)as id
+
+FROM ref_truckings_lcl_by_bracket
+";
+
+my $rs_max = $dbh->prepare($sqlr_max);
+$rs_max->execute();
+	
+	if ( $dbh->errstr ne undef ) {
+		print $dbh->errstr.":<br><pre>".$sqlr_max; 
+		$rs_max->finish;
+		exit;
+	}
+
+
+  while (  my $data = $rs_max->fetchrow_hashref ) {
+  $max_id=$data->{id};
+  }
+
+$max_id++;
+$rs_max->finish;
+
+
+if ($which_event eq "add" || $which_event eq "update") {
+
+my $sqlr = "
+SELECT
+*
+FROM ref_truckings_cost_by_date
+WHERE effective_date  = '$input_effective_date'
+AND id_trucking_cost = '$id_trucking_cost'
+";
+	if ($which_event eq "update") {
+		$sqlr .= " AND id <> '$id_date' " ;
+	}
+
+print "<pre>".$sqlr if ($dbug);	
+my $rs = $dbh->prepare($sqlr);
+$rs->execute();
+
+	if ($rs->rows > 0) {
+		$which_event="";
+	}
+}
+
+
+if ($which_event eq "delete_cost_by_volume_line") {
+
+
+my $sq_id = "
+	SELECT 
+	id_trucking_cost,
+	id_ref_trucking_by_date,
+	low_bracket,
+	up_bracket,
+	cost
+	FROM ref_truckings_lcl_by_bracket
+	WHERE id = '$id_cost_by_volume_to_delete';
+	";
+	
+	my $rs_id = $dbh->prepare($sq_id);
+	print "<pre>".$sq_id if ($dbug);	
+	$rs_id->execute();
+	
+	if ( $dbh->errstr ne undef ) {
+		print $dbh->errstr.":<br><pre>".$sq_id; 
+		$rs_id->finish;
+		exit;
+	}
+
+
+  while (  my $data = $rs_id->fetchrow_hashref ) {
+  #$id_trucking=$data->{id_trucking_cost};
+  $id_by_date=$data->{id_ref_trucking_by_date};
+  $vmin=$data->{low_bracket};
+  $vmax=$data->{up_bracket};
+  $cost=$data->{cost};
+  $body.=" Id du tarif $id_trucking_cost, date du tarif:$id_date , tranche volume basse: $vmin, tranche volume haute:$vmax, tarif: $cost <br>";
+
+  }
+
+  
+my $sqlr = "
+	DELETE FROM ref_truckings_lcl_by_bracket
+	WHERE id = '$id_cost_by_volume_to_delete';
+	";
+	
+	my $rs = $dbh->prepare($sqlr);
+	print "<pre>".$sqlr if ($dbug);	
+	$rs->execute();
+	
+	if ( $dbh->errstr ne undef ) {
+		print $dbh->errstr.":<br><pre>".$sqlr; 
+		$rs->finish;
+		exit;
+	}
+
+	$subject="Suppresion  d'un tarif Haulage";
+    #&send_mail($dbug,$fcs_serveur_mail_prod, $sender, $to, $subject, $body);
+ 
+}
+
+
+#Suppression d'une date de tarification
+if ($which_event eq "delete") {
+
+	my $sqlr = "
+	DELETE FROM ref_truckings_cost_by_date
+	WHERE id = '$id_date';
+	";
+	
+	my $rs = $dbh->prepare($sqlr);
+	print "<pre>".$sqlr if ($dbug);	
+	$rs->execute();
+	
+	if ( $dbh->errstr ne undef ) {
+		print $dbh->errstr.":<br><pre>".$sqlr; 
+		$rs->finish;
+		exit;
+	}
+  $subject="Suppression d'une date de tarif Haulage";
+  $body="  Id Date du tarif supprime:$id_date ";
+  #&send_mail($dbug, $fcs_serveur_mail_prod, $sender, $to, $subject, $body);
+}
+
+#mise a jour d'une date de tarification
+if ($which_event eq "update") {
+	my $sqlr = "
+   UPDATE ref_truckings_cost_by_date 
+	SET 
+		 effective_date='$input_effective_date', 
+		 fcl_cost_per_ct='$input_fcl_cost_per_ct',	 
+		 fcl_cost_per_ct_refer='$input_fcl_cost_per_ct_refer'
+
+	WHERE id = '$id_date' 
+	";
+	my $rs = $dbh->prepare($sqlr);
+	print "<pre>".$sqlr if ($dbug);	
+	$rs->execute();
+
+	if ( $dbh->errstr ne undef ) {
+		print $dbh->errstr.":<br><pre>".$sqlr; 
+		$rs->finish;
+		exit;
+	}
+
+
+ my $j= 0;
+
+  while ( $j < $nb_bracket) 
+  {
+  
+  my $vmin= @list_vmin[$j];
+  my $vmax= @list_vmax[$j];
+  my $cost= @list_cost[$j];
+  my $id_bracket =@list_id[$j];
+  
+  if (($vmin ne undef) && ($vmax ne undef) && ($cost ne undef))
+  {
+  $body.=" Id du tarif $id_trucking_cost, date du tarif:$id_date , tranche volume basse: $vmin, tranche volume haute:$vmax, tarif: $cost <br>";
+  my $sqlr_cost_by_volume_update = "
+    
+	UPDATE ref_truckings_lcl_by_bracket 
+	SET 
+		 cost='$cost',
+		 low_bracket ='$vmin',
+		 up_bracket ='$vmax'
+		 
+	WHERE 1=1
+--	AND id_trucking_cost = '$id_trucking_cost'
+--    AND   id_ref_trucking_by_date='$id_date'
+	AND   id ='$id_bracket'
+    ;";
+	my $rs_volume_update = $dbh->prepare($sqlr_cost_by_volume_update);
+	print "<pre>".$sqlr_cost_by_volume_update if ($dbug);	
+	$rs_volume_update->execute();
+
+	 if ( $dbh->errstr ne undef ) {
+		print $dbh->errstr.":<br><pre>".$sqlr_cost_by_volume_update; 
+		$rs_volume_update->finish;
+		exit;
+	 }
+	
+    my $sqlr_cost_by_volume = "
+	INSERT INTO ref_truckings_lcl_by_bracket (id_ref_trucking_by_date, low_bracket,up_bracket,id_trucking_cost,cost)
+    SELECT 
+	'$id_date',
+    '$vmin',
+    '$vmax',
+	'$id_trucking_cost',
+    '$cost'	
+    WHERE NOT EXISTS(
+    SELECT * FROM ref_truckings_lcl_by_bracket 
+	WHERE 1=1
+--	AND id_trucking_cost = '$id_trucking_cost' 
+	AND id_ref_trucking_by_date = '$id_date'
+	AND low_bracket = '$vmin'
+	AND up_bracket = '$vmax'
+	AND cost = '$cost'
+    );	
+	";
+	my $rs_volume = $dbh->prepare($sqlr_cost_by_volume);
+	print "<pre>".$sqlr_cost_by_volume if ($dbug);	
+	$rs_volume->execute();
+
+	 if ( $dbh->errstr ne undef ) {
+		print $dbh->errstr.":<br><pre>".$sqlr_cost_by_volume; 
+		$rs_volume->finish;
+		exit;
+	 }
+	}
+   $j++;
+  }
+  $subject="Mise à jour d'un tarif Haulage";
+  #&send_mail($dbug,$fcs_serveur_mail_prod, $sender, $to, $subject, $body);
+}
+
+#ajout d'une date de tarification
+
+if ($which_event eq "add") {
+
+	my $sqlr = "
+	INSERT INTO ref_truckings_cost_by_date (id,id_trucking_cost,effective_date,fcl_cost_per_ct,fcl_cost_per_ct_refer)
+	SELECT
+	nextval('public.ref_truckings_cost_by_date_id_seq'::text),
+   '$id_trucking_cost',
+   '$input_effective_date',
+   fcl_cost_per_ct,
+   fcl_cost_per_ct_refer
+	FROM (
+			SELECT
+			id_trucking_cost,
+			fcl_cost_per_ct,
+			fcl_cost_per_ct_refer
+			FROM ref_truckings_cost_by_date as tc
+			WHERE (tc.id_trucking_cost='$id_trucking_cost'
+			AND tc.effective_date = (
+											SELECT MAX(rc.effective_date)
+											FROM ref_truckings_cost_by_date as rc
+											WHERE rc.id_trucking_cost='$id_trucking_cost'
+											)
+			)
+			
+	UNION
+	SELECT '0','0','0'
+	) as my_requete
+	ORDER BY id_trucking_cost DESC
+	LIMIT 1
+	";
+
+	my $rs = $dbh->prepare($sqlr);
+	print "<pre>".$sqlr if ($dbug);	
+	$rs->execute();
+	
+	if ( $dbh->errstr ne undef ) {
+		print $dbh->errstr.":<br><pre>".$sqlr; 
+		$rs->finish;
+		exit;
+	}
+	
+	$subject="Creation d'un tarif Haulage";
+	$body="Creation d'un nouveau tarif le $input_effective_date";
+	#&send_mail($dbug,$fcs_serveur_mail_prod, $sender, $to, $subject, $body);
+
+}
+
+
+if ($id_trucking_cost ne "" )
+{
+#affichage des dates
+my $sqlr ="
+
+SELECT ref_truckings_cost_by_date.id,
+	to_char(to_date(effective_date, 'YYYYMMDD'), 'DD/MM/YYYY') as print_effective_date, 
+	fcl_cost_per_ct,
+	fcl_cost_per_ct_refer,
+	rgp.usd_to_euro_rate as usd_to_euro_rate
+
+
+FROM ref_truckings_cost_by_date
+
+LEFT JOIN ref_global_parameters as rgp
+ON rgp.usd_to_euro_rate IS NOT NULL
+
+WHERE id_trucking_cost = '$id_trucking_cost'
+ORDER BY effective_date DESC
+";
+
+my $rs = $dbh->prepare($sqlr);
+print "<pre>".$sqlr if ($dbug);	
+$rs->execute();
+
+my @loop = ();
+my @loop_cost_by_volume = ();
+my $num_rows_cost_by_volume;
+
+if ( $dbh->errstr ne undef ) {
+	print $dbh->errstr.":<br><pre>".$sqlr; 
+	$rs->finish;
+	exit;
+}
+
+while (  my $data = $rs->fetchrow_hashref ) {
+	my %hash_value = ();
+	
+	$hash_value{id_date} = $data->{'id'};
+	$hash_value{print_effective_date}= $data->{'print_effective_date'};
+	$hash_value{input_fcl_cost_per_ct}=	sprintf("%.2f",($data->{'fcl_cost_per_ct'}/$data->{usd_to_euro_rate}));
+	#$hash_value{input_lcl_cost_per_cbm}=sprintf("%.2f",($data->{'lcl_cost_per_cbm'}/$data->{usd_to_euro_rate}));
+	$hash_value{input_fcl_cost_per_ct_refer}=	sprintf("%.2f",($data->{'fcl_cost_per_ct_refer'}/$data->{usd_to_euro_rate}));
+	#$hash_value{input_lcl_cost_per_cbm_refer}=sprintf("%.2f",($data->{'lcl_cost_per_cbm_refer'}/$data->{usd_to_euro_rate}));
+	$hash_value{usd_to_euro}=	$data->{'usd_to_euro_rate'};
+	$usd_to_euro_rate = $data->{'usd_to_euro_rate'};
+
+    #################################################################
+	#XP 29/01/2013 affichage des tarifs LCL par tranches de volumes #
+	#################################################################
+	
+	my $sqlr_cost_by_volume ="
+
+	SELECT 
+	    id,
+		id_ref_trucking_by_date,
+		low_bracket,
+		up_bracket, 
+		cost
+		
+	FROM ref_truckings_lcl_by_bracket
+
+	WHERE 1=1
+--	AND id_trucking_cost = '$id_trucking_cost'
+	AND id_ref_trucking_by_date = '$data->{'id'}'
+	ORDER BY low_bracket ASC
+	";
+
+	my $rs_cost_by_volume = $dbh->prepare($sqlr_cost_by_volume);
+	print "<pre>".$sqlr_cost_by_volume if ($dbug);	
+	$rs_cost_by_volume->execute();
+ 
+	if ( $dbh->errstr ne undef ) {
+		print $dbh->errstr.":<br><pre>".$sqlr_cost_by_volume; 
+		$rs_cost_by_volume->finish;
+		exit;
+	}
+
+	while (  my $data = $rs_cost_by_volume->fetchrow_hashref ) {
+		my %hash_value = ();
+		$hash_value{id} = $data->{'id'};
+		$hash_value{low_bracket} = $data->{'low_bracket'};
+		$hash_value{up_bracket}= $data->{'up_bracket'};
+		$hash_value{cost}=	sprintf("%.2f",($data->{'cost'}/$usd_to_euro_rate));
+		$hash_value{id_ref_trucking_by_date}=$data->{'id_ref_trucking_by_date'};
+		push ( @loop_cost_by_volume, \%hash_value );   
+	}
+
+	$hash_value{num_rows_cost_by_volume}=$rs_cost_by_volume->rows;
+	$hash_value{loop_cost_by_volume}= \@loop_cost_by_volume;
+    push ( @loop, \%hash_value );
+
+}
+
+my $num_rows = $rs->rows;
+
+$rs->finish;
+$dbh->disconnect;
+
+my $template = HTML::Template->new( filename => $fcs_web_dir.'ajax/templates/'.'List_Truckings_tarifs.tmpl', global_vars => 1, die_on_bad_params => 0  );
+$template->param( loop  => \@loop );
+$template->param( num_rows  => $num_rows );
+$template->param( max_id  => $max_id );
+$template->param( id_trucking_cost  => $id_trucking_cost );
+$template->param( loop_cost_by_volume  => \@loop_cost_by_volume );
+
+
+print $template->output ;
+}
+
+sub send_mail {
+	my ($dbug, $serveur_mail, $sender, $to, $subject, $body) = @_;
+		
+	my $mime_msg = MIME::Lite->new(
+		From    => $sender,
+		To      => $to,
+		Subject => $subject,
+		Data    => $body, 
+		Type    => "TEXT/html",
+	)
+	or print STDERR ("Erreur lors de la création de MIME body: $!\n");
+	
+	$mime_msg->send_by_smtp($serveur_mail);
+}
